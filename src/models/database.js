@@ -1,0 +1,55 @@
+﻿import { MongoClient } from "mongodb";
+import { products, plans, collections, coverage } from "./catalog.seed.js";
+
+export async function openDatabase({ uri, dbName }) {
+  const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5000 });
+  try {
+    await client.connect();
+    const db = client.db(dbName);
+    const hello = await db.admin().command({ hello: 1 });
+    if (!hello.setName && hello.msg !== "isdbgrid") throw new Error("Arghya requires a MongoDB replica set for checkout transactions.");
+
+    const tables = Object.fromEntries([
+      "products", "plans", "collections", "coverage", "inventory", "sessions", "otpLimits",
+      "customers", "quotes", "orders", "returns", "webhookInbox", "sequences"
+    ].map(name => [name, db.collection(name)]));
+    const { sessions, otpLimits, quotes, orders, returns } = tables;
+    await Promise.all([
+      sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+      otpLimits.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+      tables.products.createIndex({ slug: 1 }, { unique: true }),
+      tables.products.createIndex({ "variants.id": 1 }, { unique: true }),
+      tables.products.createIndex({ active: 1, category: 1, rank: 1 }),
+      quotes.createIndex({ purgeAt: 1 }, { expireAfterSeconds: 0 }),
+      orders.createIndex({ phone: 1, placedAt: -1 }),
+      orders.createIndex({ quoteId: 1 }, { unique: true }),
+      orders.createIndex({ phone: 1, attemptKey: 1 }, { unique: true }),
+      orders.createIndex({ paymentStatus: 1, paymentExpiresAt: 1 }),
+      orders.createIndex({ paymentStatus: 1, confirmAt: 1 }),
+      returns.createIndex({ orderRef: 1 }, { unique: true })
+    ]);
+
+    const insertSeeds = (table, entries) => table.bulkWrite(entries.map(({ _id, ...seed }) => ({
+      updateOne: { filter: { _id }, update: { $setOnInsert: seed }, upsert: true }
+    })));
+    await Promise.all([
+      insertSeeds(tables.products, products.map((product, rank) => ({ _id: product.id, ...product, rank }))),
+      insertSeeds(tables.plans, plans.map((plan, rank) => ({ _id: plan.id, ...plan, rank }))),
+      insertSeeds(tables.collections, collections.map((collection, rank) => ({ _id: collection.slug, ...collection, rank }))),
+      insertSeeds(tables.coverage, Object.values(coverage).map(entry => ({ _id: entry.pin, ...entry }))),
+      insertSeeds(tables.inventory, [
+        ...products.flatMap(product => product.variants.map(variant => ({ _id: variant.id, available: variant.stock }))),
+        { _id: "camphor", available: 24 }, { _id: "sindoor", available: 24 }
+      ])
+    ]);
+
+    return {
+      ...tables, db,
+      transaction: operation => client.withSession(session => session.withTransaction(() => operation(session))),
+      close: () => client.close()
+    };
+  } catch (error) {
+    await client.close();
+    throw error;
+  }
+}
