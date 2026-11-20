@@ -27,6 +27,23 @@ export function createApp(db, settings) {
   const app = express();
   app.disable("x-powered-by");
   app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (typeof origin === "string") {
+      let hostname = "";
+      try { hostname = new URL(origin).hostname; } catch { hostname = ""; }
+      const allowed = hostname === "localhost" || hostname === "127.0.0.1" || hostname.endsWith(".onrender.com");
+      if (allowed) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        res.setHeader("Vary", "Origin");
+        if (req.method === "OPTIONS") return res.sendStatus(204);
+      }
+    }
+    next();
+  });
+  app.use((req, res, next) => {
     res.setHeader("X-Request-ID", crypto.randomUUID());
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "same-origin");

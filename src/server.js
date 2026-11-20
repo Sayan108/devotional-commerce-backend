@@ -21,8 +21,7 @@ export async function start(config = settings()) {
       finally { processing = false; }
     }, 5000);
     worker.unref();
-    const port = server.address().port;
-    const target = new URL("/v1/health", process.env.RENDER_EXTERNAL_URL || "http://127.0.0.1:" + port);
+    const target = "https://devotional-commerce-backend.onrender.com/v1/health";
     const ping = () => fetch(target).catch(() => {});
     ping();
     const keepalive = setInterval(ping, 4 * 60 * 1000);

@@ -4,7 +4,7 @@ const cookieName = "arghya_session";
 const sessionId = req => req.headers.cookie?.match(/(?:^|;\s*)arghya_session=([A-Za-z0-9_-]+)/)?.[1];
 
 export function authService(db, settings) {
-  const cookieOptions = { httpOnly: true, sameSite: "lax", secure: settings.secureCookies, path: "/" };
+  const cookieOptions = { httpOnly: true, sameSite: settings.secureCookies ? "none" : "lax", secure: settings.secureCookies, path: "/" };
   const get = req => {
     const id = sessionId(req);
     return id ? db.sessions.findOne({ _id: hash(id), expiresAt: { $gt: new Date() } }) : null;
