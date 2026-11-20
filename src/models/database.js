@@ -1,8 +1,15 @@
-﻿import { MongoClient } from "mongodb";
+﻿import { setDefaultResultOrder } from "node:dns";
+import { MongoClient } from "mongodb";
 import { products, plans, collections, coverage } from "./catalog.seed.js";
 
+setDefaultResultOrder("ipv4first");
+
 export async function openDatabase({ uri, dbName }) {
-  const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5000 });
+  const client = new MongoClient(uri, {
+    serverSelectionTimeoutMS: 10000,
+    family: 4,
+    autoSelectFamily: false
+  });
   try {
     await client.connect();
     const db = client.db(dbName);
