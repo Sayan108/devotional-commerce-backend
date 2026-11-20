@@ -1,5 +1,4 @@
-﻿import crypto from "node:crypto";
-import { HttpError, day, hash, iso, minute, phoneNumber, token, validPhone } from "./common.js";
+﻿import { HttpError, day, hash, iso, minute, phoneNumber, token, validPhone } from "./common.js";
 
 const cookieName = "arghya_session";
 const sessionId = req => req.headers.cookie?.match(/(?:^|;\s*)arghya_session=([A-Za-z0-9_-]+)/)?.[1];
@@ -51,7 +50,7 @@ export function authService(db, settings) {
       await limit("ip:" + req.ip, 60 * minute, 30);
       let fixtureCode;
       if (settings.otpMode === "demo") {
-        fixtureCode = String(crypto.randomInt(100000, 1000000));
+        fixtureCode = "123456";
         await db.sessions.updateOne({ _id: buyer._id, "challenge.id": id }, { $set: { "challenge.digest": hash(id + fixtureCode) } });
       } else {
         const sent = await verifyCall(settings.twilio, "Verifications", { To: "+91" + phone, Channel: "sms" });
