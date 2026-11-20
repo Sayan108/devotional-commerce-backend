@@ -29,6 +29,9 @@ export function createApp(db, settings) {
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (typeof origin === "string") {
+      if (!settings.allowedOrigins.has(origin) && origin !== `${req.protocol}://${req.get("host")}`) {
+        return next(new HttpError(403, "ORIGIN_DENIED", "This origin is not allowed."));
+      }
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Credentials", "true");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key");

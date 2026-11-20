@@ -7,12 +7,19 @@
     throw new Error("Set the Twilio Verify credentials or set OTP_MODE=demo.");
   }
   const demoPayments = env.PAYMENT_MODE === "demo" || (otpMode === "demo" && !env.PAYMENT_MODE);
+  const allowedOrigins = (env.ALLOWED_ORIGINS || [
+    "https://devotional-commerce-storefront.vercel.app",
+    "https://arghya-admin.vercel.app",
+    "https://localhost",
+    "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:4173", "http://127.0.0.1:4174",
+    "http://localhost:5173", "http://localhost:5174", "http://localhost:4173", "http://localhost:4174"
+  ].join(",")).split(",").map(origin => origin.trim()).filter(Boolean);
   return {
     uri: env.MONGODB_URI || "mongodb://127.0.0.1:27017/?replicaSet=arghya",
     dbName: env.MONGODB_DATABASE || "arghya",
     port: Number(env.PORT || 4000), host, otpMode, twilio,
     demoPayments,
-    secureCookies: env.NODE_ENV === "production",
+    secureCookies: env.NODE_ENV === "production", allowedOrigins: new Set(allowedOrigins),
     adminPhones: new Set((env.ADMIN_MOBILES || (otpMode === "demo" ? "9876543210" : "")).split(",").map(phone => phone.trim()))
   };
 }
