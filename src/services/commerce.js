@@ -1,6 +1,6 @@
-﻿import { HttpError, clean, day, minute, token } from "./common.js";
+import { HttpError, clean, day, minute, token } from "./common.js";
 import { checkedAddress } from "./addresses.js";
-import { schedule } from "./catalog.js";
+import { isPriced, schedule } from "./catalog.js";
 
 const missingQuote = () => new HttpError(409, "QUOTE_EXPIRED", "Refresh the quote before payment.");
 const notFound = () => new HttpError(404, "NOT_FOUND", "This order could not be found.");
@@ -42,7 +42,11 @@ export function commerceService(db, catalog, addresses, settings) {
       const found = options.get(id);
       if (!found) throw new HttpError(404, "NOT_FOUND", "An item in your bag is no longer available.");
       const { product, variant } = found;
-      return { id, slug: product.slug, name: product.name, quantity, unit: variant.packSize, pricePaise: variant.pricePaise, image: product.image };
+      if (!isPriced(variant.pricePaise)) throw new HttpError(409, "PRICE_UNCONFIRMED", "This product is not yet available to order.");
+      return {
+        id, slug: product.slug, name: product.name, bengali: product.bengali, quantity,
+        unit: variant.packSize, pricePaise: variant.pricePaise, image: product.image
+      };
     }) };
   }
 

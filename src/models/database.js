@@ -1,6 +1,6 @@
-﻿import { setDefaultResultOrder } from "node:dns";
+import { setDefaultResultOrder } from "node:dns";
 import { MongoClient } from "mongodb";
-import { products, plans, collections, coverage } from "./catalog.seed.js";
+import { catalogRevision, products, collections, coverage } from "./catalog.seed.js";
 
 setDefaultResultOrder("ipv4first");
 
@@ -18,7 +18,7 @@ export async function openDatabase({ uri, dbName }) {
 
     const tables = Object.fromEntries([
       "products", "plans", "collections", "coverage", "inventory", "sessions", "otpLimits",
-      "customers", "quotes", "orders", "returns", "webhookInbox", "sequences"
+      "customers", "quotes", "orders", "returns", "webhookInbox", "sequences", "catalogMigrations"
     ].map(name => [name, db.collection(name)]));
     const { sessions, otpLimits, quotes, orders, returns } = tables;
     await Promise.all([
@@ -36,27 +36,41 @@ export async function openDatabase({ uri, dbName }) {
       returns.createIndex({ orderRef: 1 }, { unique: true })
     ]);
 
-    const insertSeeds = (table, entries) => table.bulkWrite(entries.map(({ _id, ...seed }) => ({
-      updateOne: { filter: { _id }, update: { $setOnInsert: seed }, upsert: true }
-    })));
+    const transaction = operation => client.withSession(session => session.withTransaction(() => operation(session)));
     await Promise.all([
-      insertSeeds(tables.products, products.map((product, rank) => ({ _id: product.id, ...product, rank }))),
-      insertSeeds(tables.plans, plans.map((plan, rank) => ({ _id: plan.id, ...plan, rank }))),
-      insertSeeds(tables.collections, collections.map((collection, rank) => ({ _id: collection.slug, ...collection, rank }))),
-      insertSeeds(tables.coverage, Object.values(coverage).map(entry => ({ _id: entry.pin, ...entry }))),
-      insertSeeds(tables.inventory, [
-        ...products.flatMap(product => product.variants.map(variant => ({ _id: variant.id, available: variant.stock }))),
-        { _id: "camphor", available: 24 }, { _id: "sindoor", available: 24 }
-      ])
+      transaction(session => replaceCatalog(tables, session)),
+      insertSeeds(tables.coverage, Object.values(coverage).map(entry => ({ _id: entry.pin, ...entry })))
     ]);
 
-    return {
-      ...tables, db,
-      transaction: operation => client.withSession(session => session.withTransaction(() => operation(session))),
-      close: () => client.close()
-    };
+    return { ...tables, db, transaction, close: () => client.close() };
   } catch (error) {
     await client.close();
     throw error;
   }
+}
+
+function insertSeeds(table, entries, session) {
+  return table.bulkWrite(entries.map(({ _id, ...seed }) => ({
+    updateOne: { filter: { _id }, update: { $setOnInsert: seed }, upsert: true }
+  })), { session });
+}
+
+async function replaceCatalog(tables, session) {
+  const archivedAt = new Date();
+  const migration = await tables.catalogMigrations.updateOne(
+    { _id: catalogRevision }, { $setOnInsert: { appliedAt: archivedAt } }, { upsert: true, session }
+  );
+  if (!migration.upsertedCount) return;
+
+  const archive = { $set: { active: false, archivedAt } };
+  await tables.products.updateMany({ active: { $ne: false }, _id: { $nin: products.map(product => product.id) } }, archive, { session });
+  await tables.collections.updateMany({ active: { $ne: false }, _id: { $nin: collections.map(category => category.slug) } }, archive, { session });
+  await tables.plans.updateMany({ active: { $ne: false } }, archive, { session });
+
+  await insertSeeds(tables.products, products.map((product, rank) => ({ _id: product.id, ...product, rank })), session);
+  await insertSeeds(tables.collections, collections.map((category, rank) => ({ _id: category.slug, ...category, rank })), session);
+  // Previous stock records support reconciliation of orders already placed.
+  await insertSeeds(tables.inventory, products.flatMap(product => product.variants.map(variant => ({
+    _id: variant.id, available: variant.stock
+  }))), session);
 }

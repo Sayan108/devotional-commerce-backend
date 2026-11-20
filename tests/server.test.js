@@ -1,9 +1,10 @@
-﻿import test from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createApp } from "../src/app.js";
 import { settings } from "../src/config/settings.js";
 import { openDatabase } from "../src/models/database.js";
+import { catalogRevision } from "../src/models/catalog.seed.js";
 import { schedule } from "../src/services/catalog.js";
 
 function client(base) {
@@ -67,23 +68,62 @@ test("MongoDB-backed storefront and operations", async t => {
   const another = client(base);
   const staff = client(base);
   let ordinaryOrder;
+  const wicks = "puja-cotton-wicks";
+  const diya = "brass-diya";
+
+  await t.test("catalog replacement hides demo offers and preserves stock history", async () => {
+    await Promise.all([
+      db.products.insertOne({ _id: "old-incense", slug: "old-incense", active: true, variants: [{ id: "old-incense" }] }),
+      db.collections.insertOne({ _id: "incense", slug: "incense" }),
+      db.plans.insertOne({ _id: "weekly-puja", slug: "weekly-puja" }),
+      db.inventory.insertOne({ _id: "old-incense", available: 4 })
+    ]);
+    await db.catalogMigrations.deleteOne({ _id: catalogRevision });
+    const reopened = await openDatabase(config);
+    try {
+      const { data: categories } = await buyer("/v1/collections");
+      const { data: catalog } = await buyer("/v1/products");
+      assert.equal(categories.items.length, 10);
+      assert.equal(categories.items.reduce((sum, item) => sum + item.count, 0), 91);
+      assert.equal(catalog.items.length, 91);
+      assert(catalog.items.every(item => item.name && item.bengali && item.description && item.bengaliDescription &&
+        item.aliases.length > 0 && item.pricePaise === null));
+      assert.equal((await buyer("/v1/products/old-incense")).status, 404);
+      assert.equal((await buyer("/v1/plans/weekly-puja")).status, 404);
+      assert.deepEqual((await buyer("/v1/plans")).data.items, []);
+      assert.equal((await reopened.products.findOne({ _id: "old-incense" })).active, false);
+      assert.equal((await reopened.inventory.findOne({ _id: "old-incense" })).available, 4);
+    } finally { await reopened.close(); }
+  });
+
+  async function configureOffer(id, pricePaise, stock) {
+    await db.products.updateOne({ _id: id }, { $set: { "variants.0.pricePaise": pricePaise } });
+    await db.inventory.updateOne({ _id: id }, { $set: { available: stock } });
+  }
 
   await t.test("OTP, address validation, PIN and Bengali search", async () => {
     assert.equal((await buyer("/v1/orders")).status, 401);
     const session = await signIn(buyer, "9123456789");
     assert.equal(session.verified, true);
     assert.equal((await buyer("/admin/orders")).status, 403);
-    assert.deepEqual((await buyer("/v1/wishlist", post({ ids: ["cotton-wicks"] }))).data.items, ["cotton-wicks"]);
-    assert.deepEqual((await buyer("/v1/wishlist")).data.items, ["cotton-wicks"]);
-    assert.deepEqual((await buyer("/v1/wishlist/cotton-wicks", { method: "DELETE" })).data.items, []);
+    assert.deepEqual((await buyer("/v1/wishlist", post({ ids: [wicks] }))).data.items, [wicks]);
+    assert.deepEqual((await buyer("/v1/wishlist")).data.items, [wicks]);
+    assert.deepEqual((await buyer("/v1/wishlist/" + wicks, { method: "DELETE" })).data.items, []);
     assert.equal((await buyer("/v1/serviceability", post({ pin: "700099" }))).data.reason, "paused");
     assert.equal((await buyer("/v1/serviceability", post({ pin: "711101" }))).data.eligible, false);
-    assert.equal((await buyer("/v1/products?q=" + encodeURIComponent("সলতে"))).data.items[0].id, "cotton-wicks");
-    assert.equal((await buyer("/v1/quotes", post({ address: { ...address, pin: "711101" }, lines: [{ id: "cotton-wicks", quantity: 1 }] }))).status, 422);
+    for (const term of ["সলতে", "তুলো", "Cotton Wicks", "solte"]) {
+      assert.equal((await buyer("/v1/products?q=" + encodeURIComponent(term))).data.items[0].id, wicks);
+    }
+    assert.equal((await buyer("/v1/products?q=housewarming")).data.items[0].id, "griha-pravesh-puja-kit");
+    assert.equal((await buyer("/v1/products?category=puja-kits-combos")).data.items.length, 10);
+    assert.equal((await buyer("/v1/products?max=1000")).data.items.length, 0);
+    assert.equal((await buyer("/v1/quotes", post({ address: { ...address, pin: "711101" }, lines: [{ id: wicks, quantity: 1 }] }))).status, 422);
+    assert.equal((await buyer("/v1/quotes", post({ address, lines: [{ id: wicks, quantity: 1 }] }))).data.code, "PRICE_UNCONFIRMED");
   });
 
   await t.test("concurrent placement consumes a quote once and payment survives a database reconnect", async () => {
-    const quoted = await buyer("/v1/quotes", post({ address, saveAddress: true, lines: [{ id: "cotton-wicks", quantity: 1 }] }));
+    await configureOffer(wicks, 8500, 24);
+    const quoted = await buyer("/v1/quotes", post({ address, saveAddress: true, lines: [{ id: wicks, quantity: 1 }] }));
     assert.equal(quoted.status, 200);
     assert.equal(quoted.data.totalPaise, 11500);
     assert.equal((await buyer("/v1/addresses")).data.items[0].pin, "700029");
@@ -92,7 +132,7 @@ test("MongoDB-backed storefront and operations", async t => {
     assert.deepEqual(pair.map(result => result.status).sort(), [200, 201]);
     ordinaryOrder = pair[0].data.orderRef;
     assert.equal(ordinaryOrder, pair[1].data.orderRef);
-    assert.equal((await db.inventory.findOne({ _id: "cotton-wicks" })).available, 23);
+    assert.equal((await db.inventory.findOne({ _id: wicks })).available, 23);
     assert.equal((await buyer("/v1/payments/verify", post({ orderRef: ordinaryOrder, outcome: "failed" }))).data.paymentStatus, "failed");
     assert.equal((await buyer("/v1/payments/verify", post({ orderRef: ordinaryOrder, outcome: "pending" }))).data.paymentStatus, "pending");
     await db.orders.updateOne({ _id: ordinaryOrder }, { $set: { confirmAt: new Date(Date.now() - 1000) } });
@@ -102,7 +142,7 @@ test("MongoDB-backed storefront and operations", async t => {
       const stored = await second.orders.findOne({ _id: ordinaryOrder });
       assert.equal(stored.paymentStatus, "paid");
       assert.equal(stored.timeline.filter(entry => entry.milestone === "Order confirmed").length, 1);
-      assert.equal((await second.inventory.findOne({ _id: "cotton-wicks" })).available, 23);
+      assert.equal((await second.inventory.findOne({ _id: wicks })).available, 23);
     } finally { await second.close(); }
     await signIn(another, "9234567890", true);
     assert.equal((await another("/v1/orders/" + ordinaryOrder)).status, 404);
@@ -110,14 +150,20 @@ test("MongoDB-backed storefront and operations", async t => {
   });
 
   await t.test("inventory expiry, prepaid package, staff tracking and refund status", async () => {
-    const reserved = await buyer("/v1/quotes", post({ address, lines: [{ id: "brass-pradip-pair", quantity: 1 }] }));
+    await configureOffer(diya, 74900, 8);
+    const reserved = await buyer("/v1/quotes", post({ address, lines: [{ id: diya, quantity: 1 }] }));
     assert.equal(reserved.data.subtotalPaise, 74900);
     const order = await buyer("/v1/orders", { ...post({ quoteId: reserved.data.quoteId }), key: "expired-attempt" });
     await db.orders.updateOne({ _id: order.data.orderRef }, { $set: { paymentExpiresAt: new Date(Date.now() - 1000) } });
     await reconcilePayments();
-    assert.equal((await db.inventory.findOne({ _id: "brass-pradip-pair" })).available, 8);
+    assert.equal((await db.inventory.findOne({ _id: diya })).available, 8);
 
-    const plan = await buyer("/v1/quotes", post({ address, planId: "weekly-puja" }));
+    const planId = "test-recurring-plan";
+    await db.plans.insertOne({
+      _id: planId, id: planId, slug: planId, name: "Test recurring plan", active: true,
+      cadence: "weekly", drops: 4, intervalDays: 7, pricePaise: 48000, firstDrop: { [wicks]: 1 }
+    });
+    const plan = await buyer("/v1/quotes", post({ address, planId }));
     assert.equal(plan.data.drops.length, 4);
     assert.equal(plan.data.deliveryPaise, 0);
     const checkout = await buyer("/v1/orders", { ...post({ quoteId: plan.data.quoteId }), key: "package-attempt" });

@@ -1,8 +1,15 @@
-﻿import { popular } from "../models/catalog.seed.js";
+import { catalogRevision, popular } from "../models/catalog.seed.js";
 import { HttpError, clean, day, indiaOffset } from "./common.js";
 
 function publicDocument({ _id, rank, ...view }) { return view; }
 const normalize = value => typeof value === "string" ? value.normalize("NFKC").toLowerCase().trim() : "";
+export const isPriced = value => Number.isSafeInteger(value) && value >= 0;
+
+function comparePrices(a, b, direction) {
+  if (!isPriced(a)) return isPriced(b) ? 1 : 0;
+  if (!isPriced(b)) return -1;
+  return direction * (a - b);
+}
 
 export function schedule(plan, now = Date.now()) {
   const first = new Date(now + day + indiaOffset);
@@ -37,20 +44,26 @@ export function catalogService(db) {
   }
   async function browse(input) {
     const query = normalize(clean(input.q, 100));
-    const categories = normalize(input.category).split(",").filter(Boolean).map(name => name === "essentials" ? "wicks" : name);
-    const documents = await db.products.find({ active: true, ...(categories.length && { category: { $in: categories } }) }).sort({ rank: 1 }).toArray();
+    const categories = normalize(input.category).split(",").filter(Boolean);
+    const [documents, groups] = await Promise.all([
+      db.products.find({ active: true, ...(categories.length && { category: { $in: categories } }) }).sort({ rank: 1 }).toArray(),
+      query ? db.collections.find({ active: true }, { projection: { name: 1, bengali: 1 } }).toArray() : []
+    ]);
+    const categoryNames = new Map(groups.map(({ _id, name, bengali }) => [_id, name + " " + bengali]));
+    const words = query.split(/\s+/);
     const matches = documents.filter(p => {
       if (input.tag && !p.tags?.includes(input.tag)) return false;
-      const haystack = normalize([p.name, p.bengali, p.category, p.material, ...(p.aliases || [])].join(" "));
-      return !query || query.split(/\s+/).every(word => haystack.includes(word));
+      if (!query) return true;
+      const haystack = normalize([p.name, p.bengali, p.slug, p.category, categoryNames.get(p.category), p.material, ...(p.aliases || [])].join(" "));
+      return words.every(word => haystack.includes(word));
     });
     const items = (await displayProducts(matches)).filter(product => product.variants.some(variant =>
-      (input.inStock !== "1" || variant.stock > 0) &&
-      (!input.min || variant.pricePaise >= Number(input.min) * 100) &&
-      (!input.max || variant.pricePaise <= Number(input.max) * 100)
+      (input.inStock !== "1" || (variant.stock > 0 && isPriced(variant.pricePaise))) &&
+      (!input.min || (isPriced(variant.pricePaise) && variant.pricePaise >= Number(input.min) * 100)) &&
+      (!input.max || (isPriced(variant.pricePaise) && variant.pricePaise <= Number(input.max) * 100))
     ));
-    if (input.sort === "price-asc") items.sort((a, b) => a.pricePaise - b.pricePaise);
-    if (input.sort === "price-desc") items.sort((a, b) => b.pricePaise - a.pricePaise);
+    if (input.sort === "price-asc") items.sort((a, b) => comparePrices(a.pricePaise, b.pricePaise, 1));
+    if (input.sort === "price-desc") items.sort((a, b) => comparePrices(a.pricePaise, b.pricePaise, -1));
     if (input.sort === "name") items.sort((a, b) => a.name.localeCompare(b.name));
     const suggestions = query ? [...new Set(items.flatMap(p => p.aliases || []).filter(alias => normalize(alias).includes(query)))].slice(0, 4) : [];
     return { items, suggestions, nextCursor: null };
@@ -61,22 +74,22 @@ export function catalogService(db) {
     return (await displayProducts([item]))[0];
   }
   async function plan(slug, session) {
-    const item = await db.plans.findOne({ _id: slug }, { session });
+    const item = await db.plans.findOne({ _id: slug, active: { $ne: false } }, { session });
     if (!item) throw new HttpError(404, "NOT_FOUND", "This package could not be found.");
     return item;
   }
   async function listPlans() {
-    const rows = await db.plans.find().sort({ rank: 1 }).toArray();
+    const rows = await db.plans.find({ active: { $ne: false } }).sort({ rank: 1 }).toArray();
     return rows.map(planView);
   }
   async function listCollections() {
-    const [rows, counts, planCount] = await Promise.all([
-      db.collections.find().sort({ rank: 1 }).toArray(),
-      db.products.aggregate([{ $match: { active: true } }, { $group: { _id: "$category", count: { $sum: 1 } } }]).toArray(),
-      db.plans.countDocuments()
+    const [rows, counts] = await Promise.all([
+      db.collections.find({ active: true }).sort({ rank: 1 }).toArray(),
+      db.products.aggregate([{ $match: { active: true } }, { $group: { _id: "$category", count: { $sum: 1 } } }]).toArray()
     ]);
+    const countByCategory = new Map(counts.map(({ _id, count }) => [_id, count]));
     return rows.map(row => ({
-      ...publicDocument(row), count: row.slug === "packages" ? planCount : counts.find(count => count._id === row.slug)?.count || 0
+      ...publicDocument(row), count: countByCategory.get(row.slug) || 0
     }));
   }
   async function home() {
@@ -86,9 +99,9 @@ export function catalogService(db) {
     ]);
     const items = await displayProducts(documents);
     return {
-      revision: "v1", published: true,
+      revision: catalogRevision, published: true,
       hero: { headline: "For the morning puja", cta: "Shop essentials", poster: "/media/hero-lamp.jpg" },
-      collections: groups.filter(group => group.slug !== "packages"),
+      collections: groups,
       items: popular.map(id => items.find(item => item.id === id)).filter(Boolean)
     };
   }
