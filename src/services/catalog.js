@@ -1,7 +1,7 @@
 import { catalogRevision, popular } from "../models/catalog.seed.js";
 import { HttpError, clean, day, indiaOffset } from "./common.js";
 
-function publicDocument({ _id, rank, ...view }) { return view; }
+function publicDocument({ _id, rank, _catalogVersion, createdByAdmin, adminRevision, ...view }) { return view; }
 const normalize = value => typeof value === "string" ? value.normalize("NFKC").toLowerCase().trim() : "";
 export const isPriced = value => Number.isSafeInteger(value) && value >= 0;
 
@@ -93,16 +93,20 @@ export function catalogService(db) {
     }));
   }
   async function home() {
+    const homepage = await db.homeContent.findOne({ _id: "homepage" });
+    const featuredIds = homepage?.published?.featuredIds || popular;
     const [groups, documents] = await Promise.all([
       listCollections(),
-      db.products.find({ _id: { $in: popular }, active: true }).toArray()
+      db.products.find({ _id: { $in: featuredIds }, active: true }).toArray()
     ]);
     const items = await displayProducts(documents);
+    const categoryIds = homepage?.published?.categoryIds;
     return {
-      revision: catalogRevision, published: true,
-      hero: { headline: "For the morning puja", cta: "Shop essentials", poster: "/media/hero-lamp.jpg" },
-      collections: groups,
-      items: popular.map(id => items.find(item => item.id === id)).filter(Boolean)
+      revision: homepage?.revision || catalogRevision, published: true,
+      hero: homepage?.published || { headline: "For the morning puja", cta: "Shop essentials", poster: "/media/hero-lamp.jpg" },
+      sections: homepage?.published?.sections || ["categories", "featured", "kits"],
+      collections: categoryIds ? categoryIds.map(id => groups.find(group => group.slug === id)).filter(Boolean) : groups,
+      items: featuredIds.map(id => items.find(item => item.id === id)).filter(Boolean)
     };
   }
   async function coverageFor(pin, session) {

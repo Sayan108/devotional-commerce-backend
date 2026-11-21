@@ -1,4 +1,4 @@
-﻿import { HttpError, clean, token } from "./common.js";
+import { HttpError, clean, token } from "./common.js";
 
 const reasons = new Set(["damaged", "wrong", "missing", "other"]);
 const transitions = {

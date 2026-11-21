@@ -1,4 +1,4 @@
-﻿import { HttpError, clean, minute, token } from "./common.js";
+import { HttpError, clean, minute, token } from "./common.js";
 
 const transitions = new Map([
   ["mark_ready", ["paid", "ready", "Packed"]],

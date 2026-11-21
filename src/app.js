@@ -1,4 +1,4 @@
-﻿import express from "express";
+import express from "express";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { access, handleError } from "./middleware/http.js";
@@ -11,6 +11,11 @@ import { addressService } from "./services/addresses.js";
 import { commerceService } from "./services/commerce.js";
 import { returnService } from "./services/returns.js";
 import { operationsService } from "./services/operations.js";
+import { adminCatalogService } from "./services/adminCatalog.js";
+import { supportService } from "./services/support.js";
+import { homepageService } from "./services/homepage.js";
+import { adminCoverageService } from "./services/adminCoverage.js";
+import { adminPlansService } from "./services/adminPlans.js";
 import { HttpError } from "./services/common.js";
 
 const mediaDirectory = fileURLToPath(new URL("../public/media/", import.meta.url));
@@ -22,6 +27,11 @@ export function createApp(db, settings) {
   const commerce = commerceService(db, catalog, addresses, settings);
   const returns = returnService(db, commerce);
   const operations = operationsService(db, commerce);
+  const adminCatalog = adminCatalogService(db, settings.cloudinary);
+  const support = supportService(db);
+  const homepage = homepageService(db, settings.cloudinary);
+  const adminCoverage = adminCoverageService(db);
+  const adminPlans = adminPlansService(db, settings.cloudinary);
   const gate = access(auth, settings);
 
   const app = express();
@@ -59,7 +69,7 @@ export function createApp(db, settings) {
   });
   app.use("/media", express.static(mediaDirectory, { maxAge: "1d" }));
   app.use("/v1", storefrontRoutes(storefrontController({ auth, catalog, addresses, commerce, returns, db, settings }), gate));
-  app.use("/admin", operationsRoutes(operationsController({ operations, catalog, db, returns }), gate));
+  app.use("/admin", operationsRoutes(operationsController({ operations, catalog, db, returns, adminCatalog, support, homepage, adminCoverage, adminPlans, settings }), gate));
   app.use((_req, _res, next) => next(new HttpError(404, "NOT_FOUND", "Page not found.")));
   app.use(handleError);
   return { app, reconcilePayments: commerce.reconcileDue };

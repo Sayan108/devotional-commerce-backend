@@ -1,4 +1,4 @@
-﻿import express from "express";
+import express from "express";
 import { asyncHandler as wrap } from "../middleware/http.js";
 
 export function storefrontRoutes(c, g) {
@@ -38,7 +38,23 @@ export function storefrontRoutes(c, g) {
 export function operationsRoutes(c, g) {
   const router = express.Router();
   router.use(g.buyer, g.staff);
+  router.post("/media", express.raw({ type: ["image/jpeg", "image/png", "image/webp"], limit: "5mb" }), wrap(c.uploadMedia));
   router.get("/metrics", wrap(c.metrics));
+  router.get("/products", wrap(c.products));
+  router.post("/products", wrap(c.createProduct));
+  router.put("/products/:id", wrap(c.updateProduct));
+  router.get("/categories", wrap(c.categories));
+  router.put("/categories/:id", wrap(c.saveCategory));
+  router.get("/customers", wrap(c.customers));
+  router.get("/customers/:ref", wrap(c.customer));
+  router.post("/customers/:ref/cases", wrap(c.createCase));
+  router.post("/cases/:ref", wrap(c.updateCase));
+  router.get("/homepage", wrap(c.homepage));
+  router.put("/homepage", wrap(c.saveHomepage));
+  router.post("/homepage/publish", wrap(c.publishHomepage));
+  router.get("/package-drafts", wrap(c.packageDrafts));
+  router.put("/package-drafts", wrap(c.savePackageDraft));
+  router.post("/package-drafts/:id/publish", wrap(c.publishPackage));
   router.get("/orders", wrap(c.orders));
   router.get("/orders/:id", wrap(c.order));
   router.post("/orders/:id/actions", wrap(c.orderAction));
@@ -48,5 +64,6 @@ export function operationsRoutes(c, g) {
   router.get("/returns/:ref/photos/:index", wrap(c.returnPhoto));
   router.get("/plans", wrap(c.plans));
   router.get("/coverage", wrap(c.coverage));
+  router.put("/coverage/:pin", wrap(c.saveCoverage));
   return router;
 }

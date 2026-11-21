@@ -18,7 +18,8 @@ export async function openDatabase({ uri, dbName }) {
 
     const tables = Object.fromEntries([
       "products", "plans", "collections", "coverage", "inventory", "sessions", "otpLimits",
-      "customers", "quotes", "orders", "returns", "webhookInbox", "sequences", "catalogMigrations"
+      "customers", "quotes", "orders", "returns", "webhookInbox", "sequences", "catalogMigrations", "supportCases", "adminAudit",
+      "homeContent", "homeRevisions", "planDrafts", "planRevisions"
     ].map(name => [name, db.collection(name)]));
     const { sessions, otpLimits, quotes, orders, returns } = tables;
     await Promise.all([
@@ -33,6 +34,9 @@ export async function openDatabase({ uri, dbName }) {
       orders.createIndex({ phone: 1, attemptKey: 1 }, { unique: true }),
       orders.createIndex({ paymentStatus: 1, paymentExpiresAt: 1 }),
       orders.createIndex({ paymentStatus: 1, confirmAt: 1 }),
+      tables.supportCases.createIndex({ phone: 1, updatedAt: -1 }),
+      tables.homeRevisions.createIndex({ revision: 1 }, { unique: true }),
+      tables.planRevisions.createIndex({ planId: 1, revision: 1 }, { unique: true }),
       returns.createIndex({ orderRef: 1 }, { unique: true })
     ]);
 

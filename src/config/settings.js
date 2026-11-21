@@ -11,8 +11,8 @@
     "https://devotional-commerce-storefront.vercel.app",
     "https://arghya-admin.vercel.app",
     "https://localhost",
-    "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:4173", "http://127.0.0.1:4174",
-    "http://localhost:5173", "http://localhost:5174", "http://localhost:4173", "http://localhost:4174"
+    ...["localhost", "127.0.0.1", "10.0.2.2"].flatMap(host =>
+      [3000, 3001, 5173, 5174, 4173, 4174].map(port => `http://${host}:${port}`))
   ].join(",")).split(",").map(origin => origin.trim()).filter(Boolean);
   return {
     uri: env.MONGODB_URI || "mongodb://127.0.0.1:27017/?replicaSet=arghya",
@@ -20,6 +20,7 @@
     port: Number(env.PORT || 4000), host, otpMode, twilio,
     demoPayments,
     secureCookies: env.NODE_ENV === "production", allowedOrigins: new Set(allowedOrigins),
+    cloudinary: { cloudName: env.CLOUDINARY_CLOUD_NAME, apiKey: env.CLOUDINARY_API_KEY, apiSecret: env.CLOUDINARY_API_SECRET, folder: "naivedya" },
     adminPhones: new Set((env.ADMIN_MOBILES || (otpMode === "demo" ? "9876543210" : "")).split(",").map(phone => phone.trim()))
   };
 }

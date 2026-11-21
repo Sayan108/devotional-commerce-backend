@@ -189,4 +189,148 @@ test("MongoDB-backed storefront and operations", async t => {
     assert.equal((await buyer("/v1/returns/" + requestRef)).data.refundAmountPaise, 8500);
     assert.equal((await another("/v1/returns/" + requestRef)).status, 404);
   });
+
+  await t.test("staff can update products and available inventory atomically", async () => {
+    assert.equal((await buyer("/admin/products")).status, 403);
+    const items = (await staff("/admin/products")).data.items;
+    const product = items.find(item => item.id === wicks);
+    const input = {
+      name: product.name, bengali: product.bengali, description: product.description,
+      bengaliDescription: product.bengaliDescription, image: product.image,
+      aliases: product.aliases, active: true, pricePaise: 9900, stockDelta: 3,
+      reason: "Received stock", revision: product.adminRevision || 0
+    };
+    const before = (await db.inventory.findOne({ _id: wicks })).available;
+    const update = { method: "PUT", body: input };
+    assert.equal((await buyer("/admin/products/" + wicks, update)).status, 403);
+    assert.equal((await staff("/admin/products/" + wicks, update)).status, 200);
+    assert.equal((await buyer("/v1/products/" + wicks)).data.pricePaise, 9900);
+    assert.equal((await db.inventory.findOne({ _id: wicks })).available, before + 3);
+    assert.equal(await db.adminAudit.countDocuments({ action: "product.update", productId: wicks }), 1);
+    assert.equal((await staff("/admin/products/" + wicks, update)).status, 409);
+    const invalid = { ...input, revision: input.revision + 1, pricePaise: 12345, stockDelta: -(before + 4) };
+    assert.equal((await staff("/admin/products/" + wicks, { method: "PUT", body: invalid })).status, 409);
+    assert.equal((await buyer("/v1/products/" + wicks)).data.pricePaise, 9900);
+    assert.equal((await db.inventory.findOne({ _id: wicks })).available, before + 3);
+    assert.equal((await staff("/admin/products/" + wicks, { method: "PUT", body: {
+      ...input, revision: input.revision + 1, image: "/media/does-not-exist.jpg"
+    } })).status, 400);
+    const original = await db.orders.findOne({ _id: ordinaryOrder });
+    assert.equal(original.lines[0].pricePaise, 8500);
+  });
+
+  await t.test("customer support masks phone numbers and stores notes for staff only", async () => {
+    assert.equal((await buyer("/admin/customers")).status, 403);
+    const listing = await staff("/admin/customers");
+    const customer = listing.data.items.find(item => item.buyerMasked.endsWith("6789"));
+    assert(customer);
+    assert(!JSON.stringify(listing.data).includes("9123456789"));
+    const detail = await staff("/admin/customers/" + ordinaryOrder);
+    assert.equal(detail.status, 200);
+    assert(detail.data.orders.some(order => order.orderRef === ordinaryOrder));
+    assert(!JSON.stringify(detail.data).includes("9123456789"));
+    assert.equal((await buyer("/admin/customers/" + ordinaryOrder + "/cases", post({ subject: "Delivery", note: "Check delivery" }))).status, 403);
+    const created = await staff("/admin/customers/" + ordinaryOrder + "/cases", post({ subject: "Delivery", note: "Check delivery" }));
+    assert.equal(created.status, 201);
+    assert(!JSON.stringify(created.data).includes("9123456789"));
+    assert.equal((await staff("/admin/cases/" + created.data.caseRef, post({ status: "closed", note: "Resolved" }))).status, 200);
+    const updated = await staff("/admin/customers/" + ordinaryOrder);
+    assert.equal(updated.data.cases[0].status, "closed");
+    assert.equal(updated.data.cases[0].notes.length, 2);
+    assert.equal(await db.adminAudit.countDocuments({ caseRef: created.data.caseRef }), 2);
+    await db.supportCases.updateOne({ _id: created.data.caseRef }, {
+      $set: { notes: Array.from({ length: 200 }, () => ({ text: "Note", at: new Date() })) }
+    });
+    assert.equal((await staff("/admin/cases/" + created.data.caseRef, post({ status: "open", note: "One more" }))).status, 409);
+  });
+
+  await t.test("homepage drafts publish and rollback without exposing unpublished changes", async () => {
+    assert.equal((await buyer("/admin/homepage")).status, 403);
+    const initial = (await staff("/admin/homepage")).data;
+    const category = (await db.products.findOne({ _id: wicks })).category;
+    const first = { ...initial.draft, headline: "First published headline", featuredIds: [wicks],
+      categoryIds: [category], sections: ["kits", "featured", "categories"], kitTitle: "Our kits" };
+    const save = await staff("/admin/homepage", { method: "PUT", body: { version: initial.version, draft: first } });
+    assert.equal(save.status, 200);
+    assert.notEqual((await buyer("/v1/home")).data.hero.headline, first.headline);
+    assert.equal((await staff("/admin/homepage/publish", post({ version: save.data.version }))).status, 200);
+    const home = (await buyer("/v1/home")).data;
+    assert.equal(home.hero.headline, first.headline);
+    assert.equal(home.hero.kitTitle, "Our kits");
+    assert.deepEqual(home.items.map(item => item.id), [wicks]);
+    assert.deepEqual(home.collections.map(item => item.slug), [category]);
+    assert.deepEqual(home.sections, ["kits", "featured", "categories"]);
+    const state = (await staff("/admin/homepage")).data;
+    const second = { ...state.draft, headline: "Second headline" };
+    const saved = await staff("/admin/homepage", { method: "PUT", body: { version: state.version, draft: second } });
+    assert.equal((await staff("/admin/homepage/publish", post({ version: state.version }))).status, 409);
+    const published = await staff("/admin/homepage/publish", post({ version: saved.data.version }));
+    assert.equal((await buyer("/v1/home")).data.hero.headline, second.headline);
+    const restored = await staff("/admin/homepage/publish", post({ version: published.data.version, restoreRevision: 1 }));
+    assert.equal(restored.data.revision, 3);
+    assert.equal((await buyer("/v1/home")).data.hero.headline, first.headline);
+    assert.equal((await staff("/admin/homepage", { method: "PUT", body: {
+      version: restored.data.version, draft: { ...first, ctaPath: "//untrusted.example" }
+    } })).status, 400);
+  });
+
+  await t.test("staff can change coverage for new delivery checks", async () => {
+    const body = { locality: "Test locality", status: "eligible", reason: "New coverage" };
+    assert.equal((await buyer("/admin/coverage/711111", { method: "PUT", body })).status, 403);
+    assert.equal((await staff("/admin/coverage/711111", { method: "PUT", body })).status, 200);
+    assert.equal((await buyer("/v1/serviceability", post({ pin: "711111" }))).data.eligible, true);
+    assert.equal((await staff("/admin/coverage/711111", { method: "PUT", body: { ...body, status: "paused" } })).status, 200);
+    assert.equal((await buyer("/v1/serviceability", post({ pin: "711111" }))).data.reason, "paused");
+    assert.equal(await db.adminAudit.countDocuments({ action: "coverage.update", pin: "711111" }), 2);
+  });
+
+  await t.test("staff can create categories and publish complete product drafts", async () => {
+    const category = { name: "Test category", bengali: "", image: "", active: true, reason: "New category" };
+    assert.equal((await buyer("/admin/categories/test-category", { method: "PUT", body: category })).status, 403);
+    assert.equal((await staff("/admin/categories/test-category", { method: "PUT", body: category })).status, 200);
+    const draft = { id: "test-product", name: "Test product", bengali: "", category: "test-category", image: "", reason: "New product" };
+    assert.equal((await staff("/admin/products", post(draft))).status, 201);
+    assert.equal((await staff("/admin/products", post(draft))).status, 409);
+    assert.equal((await buyer("/v1/products/test-product")).status, 404);
+    const input = {
+      name: draft.name, bengali: "", description: "", bengaliDescription: "", image: "",
+      aliases: [], active: true, pricePaise: null, packSize: "", stockDelta: 0, reason: "Publish", revision: 0
+    };
+    assert.equal((await staff("/admin/products/test-product", { method: "PUT", body: input })).status, 400);
+    const complete = { ...input, image: "/media/hero-lamp.jpg", pricePaise: 10000, packSize: "1 pc", stockDelta: 2 };
+    assert.equal((await staff("/admin/products/test-product", { method: "PUT", body: complete })).status, 200);
+    assert.equal((await buyer("/v1/products/test-product")).data.stock, 2);
+    assert.equal((await staff("/admin/categories/test-category", { method: "PUT", body: { ...category, active: false } })).status, 409);
+    assert.equal((await staff("/admin/products/test-product", { method: "PUT", body: {
+      ...complete, active: false, stockDelta: 0, revision: 1
+    } })).status, 200);
+    assert.equal((await staff("/admin/categories/test-category", { method: "PUT", body: { ...category, active: false } })).status, 200);
+    assert.equal((await staff("/admin/products/test-product", { method: "PUT", body: {
+      ...complete, stockDelta: 0, revision: 2
+    } })).status, 409);
+  });
+
+  await t.test("package drafts publish new terms without changing existing orders", async () => {
+    const id = "test-recurring-plan";
+    const oldOrder = await db.orders.findOne({ planId: id });
+    const input = {
+      id, name: "Updated package", cadence: "monthly", drops: 3, pricePaise: 65000,
+      image: "/media/hero-lamp.jpg", inventory: [{ id: wicks, quantity: 1 }],
+      reason: "Update package", version: 0
+    };
+    assert.equal((await buyer("/admin/package-drafts", { method: "PUT", body: input })).status, 403);
+    const saved = await staff("/admin/package-drafts", { method: "PUT", body: input });
+    assert.equal(saved.status, 200);
+    assert.equal((await buyer("/v1/plans/" + id)).data.name, "Test recurring plan");
+    assert.equal((await staff("/admin/package-drafts/" + id + "/publish", post({ version: 1, reason: input.reason }))).status, 200);
+    const current = (await buyer("/v1/plans/" + id)).data;
+    assert.equal(current.name, "Updated package");
+    assert.equal(current.drops, 3);
+    assert.equal(current.pricePaise, 65000);
+    const after = await db.orders.findOne({ _id: oldOrder._id });
+    assert.deepEqual(after.drops, oldOrder.drops);
+    assert.deepEqual(after.inventory, oldOrder.inventory);
+    assert.equal(after.totalPaise, oldOrder.totalPaise);
+    assert.equal((await staff("/admin/package-drafts/" + id + "/publish", post({ version: 1, reason: input.reason }))).status, 409);
+  });
 });
